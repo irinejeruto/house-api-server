@@ -1,9 +1,11 @@
 ############################################################
 # api.R - Plumber API for House Price Models
-# Final regression model:
+#
+# Final regression model (saved as linear_model.rds):
 #   Log_price ~ Log_Beds + Log_Baths + Log_Sqft_home +
 #               Log_Sqft_lot + Age + Type + Town
-# Classification model:
+#
+# Classification model (saved as logit_model.rds):
 #   HighPrice ~ Beds + Baths + Sqft_home + Sqft_lot + Age +
 #               Type + Town
 ############################################################
@@ -20,7 +22,6 @@ cors <- function(req, res) {
   res$setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
   res$setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-  # Handle preflight OPTIONS requests
   if (req$REQUEST_METHOD == "OPTIONS") {
     res$status <- 200
     return(list())
@@ -34,7 +35,7 @@ cors <- function(req, res) {
 ############################################################
 
 # These .rds files must be in the same directory as api.R
-linear_model <- readRDS("linear_model.rds")   # FinalModel
+linear_model <- readRDS("linear_model.rds")   # FinalModel (Log_price model)
 logit_model  <- readRDS("logit_model.rds")    # High vs Low logistic model
 
 # Helper to safely extract factor levels from model$xlevels
@@ -49,7 +50,6 @@ safe_xlevels <- function(model, name) {
 # Get factor levels for Type and Town from both models
 levels_type_lin   <- safe_xlevels(linear_model, "Type")
 levels_town_lin   <- safe_xlevels(linear_model, "Town")
-
 levels_type_logit <- safe_xlevels(logit_model, "Type")
 levels_town_logit <- safe_xlevels(logit_model, "Town")
 
@@ -63,9 +63,11 @@ levels_town <- unique(c(levels_town_lin, levels_town_logit))
 
 #* @apiTitle House Price Prediction API
 #* @apiDescription
-#* Predict house sale prices (via log-price linear regression)
-#* and classify homes as High/Low value (via logistic regression),
-#* using structural features (Beds, Baths, Sqft, Age) and location (Type, Town).
+#* Predict house log sale prices and actual sale prices
+#* (via linear regression on Log_price), and classify homes
+#* as High/Low value (via logistic regression),
+#* using structural features (Beds, Baths, Sqft, Age)
+#* and location (Type, Town).
 
 ############################################################
 # HELPER: BUILD BASE NEWDATA WITH CORRECT TYPES
@@ -112,10 +114,10 @@ function() {
 }
 
 ############################################################
-# PRICE PREDICTION ENDPOINT  (FinalModel: log–log + Age + Type + Town)
+# PRICE PREDICTION ENDPOINT  (FinalModel: Log_price model)
 ############################################################
 
-#* Predict log price and sale price for a house
+#* Predict log price and actual sale price for a house
 #*
 #* @param Beds:number Number of bedrooms
 #* @param Baths:number Number of bathrooms
@@ -153,15 +155,17 @@ function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, Town) {
     ))
   }
 
-  # Add log-transformed predictors to match FinalModel
+  # Create the log predictors to match the model formula
   newdata$Log_Beds      <- log(newdata$Beds)
   newdata$Log_Baths     <- log(newdata$Baths)
   newdata$Log_Sqft_home <- log(newdata$Sqft_home)
   newdata$Log_Sqft_lot  <- log(newdata$Sqft_lot)
 
-  # Predict log-price and convert to original scale
+  # Predict LOG price (model is on log scale)
   pred_log_price <- as.numeric(predict(linear_model, newdata = newdata))
-  pred_price     <- exp(pred_log_price)
+
+  # Back-transform to original dollar scale
+  pred_price <- exp(pred_log_price)
 
   list(
     error               = FALSE,
