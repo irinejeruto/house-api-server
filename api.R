@@ -1,9 +1,14 @@
 ############################################################
 # api.R - Plumber API for House Price Models
+# Final regression model:
+#   Log_price ~ Log_Beds + Log_Baths + Log_Sqft_home +
+#               Log_Sqft_lot + Age + Type + Town
+# Classification model:
+#   HighPrice ~ Beds + Baths + Sqft_home + Sqft_lot + Age +
+#               Type + Town
 ############################################################
 
 library(plumber)
-library(dplyr)
 
 ############################################################
 # CORS FILTER (for browser-based frontends like Next.js)
@@ -15,7 +20,7 @@ cors <- function(req, res) {
   res$setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
   res$setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-  # Handle preflight OPTIONS request
+  # Handle preflight OPTIONS requests
   if (req$REQUEST_METHOD == "OPTIONS") {
     res$status <- 200
     return(list())
@@ -29,10 +34,10 @@ cors <- function(req, res) {
 ############################################################
 
 # These .rds files must be in the same directory as api.R
-linear_model <- readRDS("linear_model.rds")   # FinalModel (log-price regression)
-logit_model  <- readRDS("logit_model.rds")    # logit_model (High vs Low)
+linear_model <- readRDS("loglin_model.rds")   # FinalModel
+logit_model  <- readRDS("logit_model.rds")    # High vs Low logistic model
 
-# Extract factor levels from the models to keep them consistent
+# Helper to safely extract factor levels from model$xlevels
 safe_xlevels <- function(model, name) {
   if (!is.null(model$xlevels[[name]])) {
     model$xlevels[[name]]
@@ -41,15 +46,16 @@ safe_xlevels <- function(model, name) {
   }
 }
 
-levels_type_lin        <- safe_xlevels(linear_model, "Type")
-levels_university_lin  <- safe_xlevels(linear_model, "University")
+# Get factor levels for Type and Town from both models
+levels_type_lin   <- safe_xlevels(linear_model, "Type")
+levels_town_lin   <- safe_xlevels(linear_model, "Town")
 
-levels_type_logit      <- safe_xlevels(logit_model, "Type")
-levels_university_logit<- safe_xlevels(logit_model, "University")
+levels_type_logit <- safe_xlevels(logit_model, "Type")
+levels_town_logit <- safe_xlevels(logit_model, "Town")
 
-# Use a common set of levels (union) across both models
-levels_type       <- unique(c(levels_type_lin,       levels_type_logit))
-levels_university <- unique(c(levels_university_lin, levels_university_logit))
+# Use a unified set of levels across models
+levels_type <- unique(c(levels_type_lin, levels_type_logit))
+levels_town <- unique(c(levels_town_lin, levels_town_logit))
 
 ############################################################
 # API TITLE / DESCRIPTION
@@ -58,30 +64,31 @@ levels_university <- unique(c(levels_university_lin, levels_university_logit))
 #* @apiTitle House Price Prediction API
 #* @apiDescription
 #* Predict house sale prices (via log-price linear regression)
-#* and classify homes as High/Low value (via logistic regression).
+#* and classify homes as High/Low value (via logistic regression),
+#* using structural features (Beds, Baths, Sqft, Age) and location (Type, Town).
 
 ############################################################
-# HELPER: BUILD NEWDATA ROW WITH CORRECT CLASSES
+# HELPER: BUILD BASE NEWDATA WITH CORRECT TYPES
 ############################################################
 
-build_newdata <- function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University) {
-  Beds       <- as.numeric(Beds)
-  Baths      <- as.numeric(Baths)
-  Sqft_home  <- as.numeric(Sqft_home)
-  Sqft_lot   <- as.numeric(Sqft_lot)
-  Age        <- as.numeric(Age)
+build_base_newdata <- function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, Town) {
+  Beds      <- as.numeric(Beds)
+  Baths     <- as.numeric(Baths)
+  Sqft_home <- as.numeric(Sqft_home)
+  Sqft_lot  <- as.numeric(Sqft_lot)
+  Age       <- as.numeric(Age)
 
-  Type       <- factor(Type,       levels = levels_type)
-  University <- factor(University, levels = levels_university)
+  Type <- factor(Type, levels = levels_type)
+  Town <- factor(Town, levels = levels_town)
 
   data.frame(
-    Beds       = Beds,
-    Baths      = Baths,
-    Sqft_home  = Sqft_home,
-    Sqft_lot   = Sqft_lot,
-    Age        = Age,
-    Type       = Type,
-    University = University,
+    Beds      = Beds,
+    Baths     = Baths,
+    Sqft_home = Sqft_home,
+    Sqft_lot  = Sqft_lot,
+    Age       = Age,
+    Type      = Type,
+    Town      = Town,
     stringsAsFactors = FALSE
   )
 }
@@ -105,7 +112,7 @@ function() {
 }
 
 ############################################################
-# PRICE PREDICTION ENDPOINT
+# PRICE PREDICTION ENDPOINT  (FinalModel: log–log + Age + Type + Town)
 ############################################################
 
 #* Predict log price and sale price for a house
@@ -116,12 +123,12 @@ function() {
 #* @param Sqft_lot:number Square footage of the lot
 #* @param Age:number Age of the home (years)
 #* @param Type:string Property type (e.g., "Single Family")
-#* @param University:string Nearest university (e.g., "Iowa State University")
+#* @param Town:string Town (e.g., "Ames, IA")
 #* @get /predict_price
 #* @serializer unboxedJSON
-function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University) {
+function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, Town) {
 
-  newdata <- build_newdata(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University)
+  newdata <- build_base_newdata(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, Town)
 
   # Validate factor levels
   if (is.na(newdata$Type)) {
@@ -135,17 +142,24 @@ function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University) {
     ))
   }
 
-  if (is.na(newdata$University)) {
+  if (is.na(newdata$Town)) {
     return(list(
       error   = TRUE,
       message = paste0(
-        "Invalid University: '", University,
+        "Invalid Town: '", Town,
         "'. Allowed values are: ",
-        paste(levels_university, collapse = ", ")
+        paste(levels_town, collapse = ", ")
       )
     ))
   }
 
+  # Add log-transformed predictors to match FinalModel
+  newdata$Log_Beds      <- log(newdata$Beds)
+  newdata$Log_Baths     <- log(newdata$Baths)
+  newdata$Log_Sqft_home <- log(newdata$Sqft_home)
+  newdata$Log_Sqft_lot  <- log(newdata$Sqft_lot)
+
+  # Predict log-price and convert to original scale
   pred_log_price <- as.numeric(predict(linear_model, newdata = newdata))
   pred_price     <- exp(pred_log_price)
 
@@ -158,7 +172,7 @@ function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University) {
 }
 
 ############################################################
-# HIGH / LOW CLASSIFICATION ENDPOINT
+# HIGH / LOW CLASSIFICATION ENDPOINT (logit_model)
 ############################################################
 
 #* Classify a house as High / Low price
@@ -169,13 +183,13 @@ function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University) {
 #* @param Sqft_lot:number Square footage of the lot
 #* @param Age:number Age of the home (years)
 #* @param Type:string Property type (e.g., "Single Family")
-#* @param University:string Nearest university
+#* @param Town:string Town (e.g., "Ames, IA")
 #* @param threshold:number Probability cutoff for High (default = 0.5)
 #* @get /predict_highlow
 #* @serializer unboxedJSON
-function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University, threshold = 0.5) {
+function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, Town, threshold = 0.5) {
 
-  newdata <- build_newdata(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University)
+  newdata <- build_base_newdata(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, Town)
 
   # Validate factor levels
   if (is.na(newdata$Type)) {
@@ -189,13 +203,13 @@ function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University, threshold = 0.
     ))
   }
 
-  if (is.na(newdata$University)) {
+  if (is.na(newdata$Town)) {
     return(list(
       error   = TRUE,
       message = paste0(
-        "Invalid University: '", University,
+        "Invalid Town: '", Town,
         "'. Allowed values are: ",
-        paste(levels_university, collapse = ", ")
+        paste(levels_town, collapse = ", ")
       )
     ))
   }
@@ -205,6 +219,7 @@ function(Beds, Baths, Sqft_home, Sqft_lot, Age, Type, University, threshold = 0.
     threshold <- 0.5
   }
 
+  # Predict probability of High price
   prob_high <- as.numeric(
     predict(logit_model, newdata = newdata, type = "response")
   )
