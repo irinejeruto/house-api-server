@@ -34,7 +34,7 @@ cors <- function(req, res) {
 ############################################################
 
 # These .rds files must be in the same directory as api.R
-linear_model <- readRDS("loglin_model.rds")   # FinalModel
+linear_model <- readRDS("linear_model.rds")   # FinalModel
 logit_model  <- readRDS("logit_model.rds")    # High vs Low logistic model
 
 # Helper to safely extract factor levels from model$xlevels
